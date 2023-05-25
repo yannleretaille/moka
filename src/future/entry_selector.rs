@@ -349,8 +349,33 @@ where
     {
         futures_util::pin_mut!(init);
         let key = Arc::new(self.owned_key);
+        let replace_if = None as Option<fn(&V) -> bool>;
         self.cache
-            .get_or_try_insert_with_hash_and_fun(key, self.hash, init, true)
+            .get_or_try_insert_with_hash_and_fun(key, self.hash, init, replace_if, true)
+            .await
+    }
+
+    /// Works like [`or_try_insert_with`](#method.or_try_insert_with), but takes an additional
+    /// `replace_if` closure.
+    ///
+    /// This method will try to resolve the `init` future and insert the output to the
+    /// cache when:
+    ///
+    /// - The key does not exist.
+    /// - Or, `replace_if` closure returns `true`.
+    pub async fn or_try_insert_with_if<F, E>(
+        self, 
+        init: F,
+        replace_if: impl FnMut(&V) -> bool,
+    ) -> Result<Entry<K, V>, Arc<E>>
+    where
+        F: Future<Output = Result<V, E>>,
+        E: Send + Sync + 'static,
+    {
+        futures_util::pin_mut!(init);
+        let key = Arc::new(self.owned_key);
+        self.cache
+            .get_or_try_insert_with_hash_and_fun(key, self.hash, init, Some(replace_if), true)
             .await
     }
 }
@@ -700,8 +725,9 @@ where
         E: Send + Sync + 'static,
     {
         futures_util::pin_mut!(init);
+        let replace_if = None as Option<fn(&V) -> bool>;
         self.cache
-            .get_or_try_insert_with_hash_by_ref_and_fun(self.ref_key, self.hash, init, true)
+            .get_or_try_insert_with_hash_by_ref_and_fun(self.ref_key, self.hash, init, replace_if, true)
             .await
     }
 }

@@ -1332,7 +1332,8 @@ where
         futures_util::pin_mut!(init);
         let hash = self.base.hash(&key);
         let key = Arc::new(key);
-        self.get_or_try_insert_with_hash_and_fun(key, hash, init, false)
+        let replace_if = None as Option<fn(&V) -> bool>;
+        self.get_or_try_insert_with_hash_and_fun(key, hash, init, replace_if, false)
             .await
             .map(Entry::into_value)
     }
@@ -1349,7 +1350,8 @@ where
     {
         futures_util::pin_mut!(init);
         let hash = self.base.hash(key);
-        self.get_or_try_insert_with_hash_by_ref_and_fun(key, hash, init, false)
+        let replace_if = None as Option<fn(&V) -> bool>;
+        self.get_or_try_insert_with_hash_by_ref_and_fun(key, hash, init, replace_if, false)
             .await
             .map(Entry::into_value)
     }
@@ -1835,18 +1837,22 @@ where
         key: Arc<K>,
         hash: u64,
         init: Pin<&mut F>,
+        mut replace_if: Option<impl FnMut(&V) -> bool>,
         need_key: bool,
     ) -> Result<Entry<K, V>, Arc<E>>
     where
         F: Future<Output = Result<V, E>>,
         E: Send + Sync + 'static,
     {
-        if let Some(entry) = self.base.get_with_hash(&key, hash, need_key) {
-            return Ok(entry);
+        let maybe_entry =
+            self.base
+                .get_with_hash_and_ignore_if(&key, hash, replace_if.as_mut(), need_key);
+        if let Some(entry) = maybe_entry {
+            Ok(entry)
+        } else {
+            self.try_insert_with_hash_and_fun(key, hash, init, replace_if, need_key)
+                .await
         }
-
-        self.try_insert_with_hash_and_fun(key, hash, init, need_key)
-            .await
     }
 
     pub(super) async fn get_or_try_insert_with_hash_by_ref_and_fun<F, E, Q>(
@@ -1854,6 +1860,7 @@ where
         key: &Q,
         hash: u64,
         init: Pin<&mut F>,
+        mut replace_if: Option<impl FnMut(&V) -> bool>,
         need_key: bool,
     ) -> Result<Entry<K, V>, Arc<E>>
     where
@@ -1862,12 +1869,16 @@ where
         K: Borrow<Q>,
         Q: ToOwned<Owned = K> + Hash + Eq + ?Sized,
     {
-        if let Some(entry) = self.base.get_with_hash(key, hash, need_key) {
-            return Ok(entry);
+        let maybe_entry =
+            self.base
+                .get_with_hash_and_ignore_if(key, hash, replace_if.as_mut(), need_key);
+        if let Some(entry) = maybe_entry {
+            Ok(entry)
+        } else {
+            let key = Arc::new(key.to_owned());
+            self.try_insert_with_hash_and_fun(key, hash, init, replace_if, need_key)
+                .await
         }
-        let key = Arc::new(key.to_owned());
-        self.try_insert_with_hash_and_fun(key, hash, init, need_key)
-            .await
     }
 
     async fn try_insert_with_hash_and_fun<F, E>(
@@ -1875,6 +1886,7 @@ where
         key: Arc<K>,
         hash: u64,
         init: Pin<&mut F>,
+        mut replace_if: Option<impl FnMut(&V) -> bool>,
         need_key: bool,
     ) -> Result<Entry<K, V>, Arc<E>>
     where
@@ -1884,9 +1896,8 @@ where
         use futures_util::FutureExt;
 
         let get = || {
-            let ignore_if = None as Option<&mut fn(&V) -> bool>;
             self.base
-                .get_with_hash_without_recording(&key, hash, ignore_if)
+                .get_with_hash_without_recording(&key, hash, replace_if.as_mut())
         };
         let insert = |v| self.insert_with_hash(key.clone(), hash, v).boxed();
 
