@@ -11,6 +11,7 @@ use crate::{
             Weigher, WriteOp,
         },
         time::Instant,
+        entry::MaybeEntry,
     },
     notification::{self, EvictionListener},
     policy::ExpirationPolicy,
@@ -32,6 +33,8 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+
+use async_fn_traits::AsyncFnOnce1;
 
 /// A thread-safe, futures-aware concurrent in-memory cache.
 ///
@@ -1326,14 +1329,15 @@ where
     ///
     pub async fn try_get_with<F, E>(&self, key: K, init: F) -> Result<V, Arc<E>>
     where
-        F: Future<Output = Result<V, E>>,
+        F: Future<Output = Result<V, E>> + Send,
         E: Send + Sync + 'static,
     {
         futures_util::pin_mut!(init);
         let hash = self.base.hash(&key);
         let key = Arc::new(key);
+        let replace = None as Option<fn(V) -> Pin<Box<dyn Future<Output=Result<V,E>>+Send>>>;
         let replace_if = None as Option<fn(&V) -> bool>;
-        self.get_or_try_insert_with_hash_and_fun(key, hash, init, replace_if, false)
+        self.get_or_try_insert_with_hash_and_fun(key, hash, init, replace, replace_if, false)
             .await
             .map(Entry::into_value)
     }
@@ -1343,15 +1347,16 @@ where
     /// the cache, the key will be cloned to create new entry in the cache.
     pub async fn try_get_with_by_ref<F, E, Q>(&self, key: &Q, init: F) -> Result<V, Arc<E>>
     where
-        F: Future<Output = Result<V, E>>,
+        F: Future<Output = Result<V, E>> + Send,
         E: Send + Sync + 'static,
         K: Borrow<Q>,
         Q: ToOwned<Owned = K> + Hash + Eq + ?Sized,
     {
         futures_util::pin_mut!(init);
         let hash = self.base.hash(key);
+        let replace = None as Option<fn(&V) -> Pin<Box<dyn Future<Output=Result<V,E>>+Send>>>;
         let replace_if = None as Option<fn(&V) -> bool>;
-        self.get_or_try_insert_with_hash_by_ref_and_fun(key, hash, init, replace_if, false)
+        self.get_or_try_insert_with_hash_by_ref_and_fun(key, hash, init, replace,  replace_if, false)
             .await
             .map(Entry::into_value)
     }
@@ -1638,7 +1643,7 @@ where
     ) -> Entry<K, V> {
         let maybe_entry =
             self.base
-                .get_with_hash_and_ignore_if(&key, hash, replace_if.as_mut(), need_key);
+                .get_with_hash_and_ignore_if(&key, hash, replace_if.as_mut(), need_key).into_option();
         if let Some(entry) = maybe_entry {
             entry
         } else {
@@ -1661,7 +1666,7 @@ where
     {
         let maybe_entry =
             self.base
-                .get_with_hash_and_ignore_if(key, hash, replace_if.as_mut(), need_key);
+                .get_with_hash_and_ignore_if(key, hash, replace_if.as_mut(), need_key).into_option();
         if let Some(entry) = maybe_entry {
             entry
         } else {
@@ -1832,39 +1837,53 @@ where
         }
     }
 
-    pub(super) async fn get_or_try_insert_with_hash_and_fun<F, E>(
+    pub(super) async fn get_or_try_insert_with_hash_and_fun<FI, FR, FrFut, E>(
         &self,
         key: Arc<K>,
         hash: u64,
-        init: Pin<&mut F>,
+        init: Pin<&mut FI>,
+        replace: Option<FR>,
         mut replace_if: Option<impl FnMut(&V) -> bool>,
         need_key: bool,
     ) -> Result<Entry<K, V>, Arc<E>>
     where
-        F: Future<Output = Result<V, E>>,
+        FI: Future<Output = Result<V, E>>,
+        FR: FnOnce(V) -> FrFut,
+        FrFut: Future<Output = Result<V, E>>,
         E: Send + Sync + 'static,
     {
         let maybe_entry =
             self.base
                 .get_with_hash_and_ignore_if(&key, hash, replace_if.as_mut(), need_key);
-        if let Some(entry) = maybe_entry {
-            Ok(entry)
-        } else {
-            self.try_insert_with_hash_and_fun(key, hash, init, replace_if, need_key)
+
+        match (maybe_entry, replace) {
+            (MaybeEntry::Valid(entry),_) => Ok(entry),
+            (MaybeEntry::Ignored(entry), Some(replace)) => {
+                let r_future = replace(entry.into_value());
+                futures_util::pin_mut!(r_future);
+                self.try_insert_with_hash_and_fun(key, hash, r_future, replace_if, need_key)
                 .await
+            }, 
+            (MaybeEntry::Ignored(_), None) | (MaybeEntry::Invalidated,_) | (MaybeEntry::Expired,_) | (MaybeEntry::None, _) => {
+                self.try_insert_with_hash_and_fun(key, hash, init, replace_if, need_key)
+                .await
+            }
         }
     }
 
-    pub(super) async fn get_or_try_insert_with_hash_by_ref_and_fun<F, E, Q>(
+    pub(super) async fn get_or_try_insert_with_hash_by_ref_and_fun<FI, FR, FrFut, E, Q>(
         &self,
         key: &Q,
         hash: u64,
-        init: Pin<&mut F>,
+        init: Pin<&mut FI>,
+        replace: Option<FR>,
         mut replace_if: Option<impl FnMut(&V) -> bool>,
         need_key: bool,
     ) -> Result<Entry<K, V>, Arc<E>>
     where
-        F: Future<Output = Result<V, E>>,
+        FI: Future<Output = Result<V, E>>,
+        FR: FnOnce(&V) -> FrFut,
+        FrFut: Future<Output = Result<V, E>>,
         E: Send + Sync + 'static,
         K: Borrow<Q>,
         Q: ToOwned<Owned = K> + Hash + Eq + ?Sized,
@@ -1872,12 +1891,21 @@ where
         let maybe_entry =
             self.base
                 .get_with_hash_and_ignore_if(key, hash, replace_if.as_mut(), need_key);
-        if let Some(entry) = maybe_entry {
-            Ok(entry)
-        } else {
-            let key = Arc::new(key.to_owned());
-            self.try_insert_with_hash_and_fun(key, hash, init, replace_if, need_key)
+
+        match (maybe_entry, replace) {
+            (MaybeEntry::Valid(entry),_) => Ok(entry),
+            (MaybeEntry::Ignored(entry), Some(replace)) => {
+                let key = Arc::new(key.to_owned());
+                let r_future = replace(&entry.into_value());
+                futures_util::pin_mut!(r_future);
+                self.try_insert_with_hash_and_fun(key, hash, r_future, replace_if, need_key)
                 .await
+            }, 
+            (MaybeEntry::Ignored(_), None) | (MaybeEntry::Invalidated,_) | (MaybeEntry::Expired,_) | (MaybeEntry::None, _) => {
+                let key = Arc::new(key.to_owned());
+                self.try_insert_with_hash_and_fun(key, hash, init, replace_if, need_key)
+                .await
+            }
         }
     }
 

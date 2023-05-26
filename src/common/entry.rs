@@ -73,3 +73,22 @@ impl<K, V> Entry<K, V> {
         self.is_fresh
     }
 }
+
+pub enum MaybeEntry<K,V> {
+    Valid(Entry<K,V>),
+    Ignored(Entry<K,V>),
+    None,
+    Expired,
+    Invalidated,
+    
+    
+} 
+
+impl<K, V> MaybeEntry<K, V> {
+    pub fn into_option(self) -> Option<Entry<K,V>>{
+        match self {
+            Self::Valid(e) => Some(e),
+            _ => None
+        }
+    }  
+}

@@ -47,20 +47,7 @@ js = ["uuid/js"]
 unstable-debug-counters = ["future"]
 
 # A feature used internally.
-_core = [
-    "crossbeam-channel",
-    "crossbeam-epoch",
-    "crossbeam-utils",
-    "num_cpus",
-    "once_cell",
-    "parking_lot",
-    "scheduled-thread-pool",
-    "smallvec",
-    "tagptr",
-    "thiserror",
-    "triomphe",
-    "uuid",
-]
+_core = ["crossbeam-channel", "crossbeam-epoch", "crossbeam-utils", "num_cpus", "once_cell", "parking_lot", "scheduled-thread-pool", "smallvec", "tagptr", "thiserror", "triomphe", "uuid"]
 
 [dependencies]
 
@@ -93,6 +80,7 @@ futures-util = { version = "0.3", optional = true }
 
 # Optional dependencies (logging)
 log = { version = "0.4", optional = true }
+async_fn_traits = "0.1.1"
 
 [dev-dependencies]
 actix-rt = { version = "2.7", default-features = false }

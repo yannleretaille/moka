@@ -1232,7 +1232,7 @@ where
     ) -> Entry<K, V> {
         self.base
             .get_with_hash_and_ignore_if(&key, hash, replace_if.as_mut(), need_key)
-            .unwrap_or_else(|| self.insert_with_hash_and_fun(key, hash, init, replace_if, need_key))
+            .into_option().unwrap_or_else(|| self.insert_with_hash_and_fun(key, hash, init, replace_if, need_key))
     }
 
     // Need to create new function instead of using the existing
@@ -1254,7 +1254,7 @@ where
     {
         self.base
             .get_with_hash_and_ignore_if(key, hash, replace_if.as_mut(), need_key)
-            .unwrap_or_else(|| {
+            .into_option().unwrap_or_else(|| {
                 let key = Arc::new(key.to_owned());
                 self.insert_with_hash_and_fun(key, hash, init, replace_if, need_key)
             })

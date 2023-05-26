@@ -24,6 +24,7 @@ use crate::{
         time::{CheckedTimeOps, Clock, Instant},
         timer_wheel::{ReschedulingResult, TimerWheel},
         CacheRegion,
+        entry::MaybeEntry,
     },
     notification::{
         self,
@@ -240,7 +241,7 @@ where
                 .expect("Failed to record a get op");
         };
         let ignore_if = None as Option<&mut fn(&V) -> bool>;
-        self.do_get_with_hash(key, hash, record, ignore_if, need_key)
+        self.do_get_with_hash(key, hash, record, ignore_if, need_key).into_option()
     }
 
     pub(crate) fn get_with_hash_and_ignore_if<Q, I>(
@@ -249,7 +250,7 @@ where
         hash: u64,
         ignore_if: Option<&mut I>,
         need_key: bool,
-    ) -> Option<Entry<K, V>>
+    ) -> MaybeEntry<K, V>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -276,8 +277,7 @@ where
     {
         // Define a closure that skips to record a read op.
         let record = |_op, _now| {};
-        self.do_get_with_hash(key, hash, record, ignore_if, false)
-            .map(Entry::into_value)
+        self.do_get_with_hash(key, hash, record, ignore_if, false).into_option().map(Entry::into_value)
     }
 
     fn do_get_with_hash<Q, R, I>(
@@ -287,7 +287,7 @@ where
         read_recorder: R,
         mut ignore_if: Option<&mut I>,
         need_key: bool,
-    ) -> Option<Entry<K, V>>
+    ) -> MaybeEntry<K, V>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -295,10 +295,18 @@ where
         I: FnMut(&V) -> bool,
     {
         if self.is_map_disabled() {
-            return None;
+            return MaybeEntry::None;
         }
 
         let mut now = self.current_time_from_expiration_clock();
+
+        // local result enum
+        enum GetKVResult<K,V> {
+            Valid(Option<Arc<K>>, triomphe::Arc<ValueEntry<K, V>>),
+            Ignored(Option<Arc<K>>, triomphe::Arc<ValueEntry<K, V>>),
+            Expired,
+            Invalidated,
+        }
 
         let maybe_entry = self
             .inner
@@ -306,7 +314,8 @@ where
                 if let Some(ignore_if) = &mut ignore_if {
                     if ignore_if(&entry.value) {
                         // Ignore the entry.
-                        return None;
+                        let maybe_key = if need_key { Some(Arc::clone(k)) } else { None };
+                        return Some(GetKVResult::Ignored(maybe_key, TrioArc::clone(entry)))
                     }
                 }
 
@@ -316,74 +325,89 @@ where
                 if is_expired_by_per_entry_ttl(entry.entry_info(), now)
                     || is_expired_entry_wo(ttl, va, entry, now)
                     || is_expired_entry_ao(tti, va, entry, now)
-                    || i.is_invalidated_entry(k, entry)
                 {
                     // Expired or invalidated entry.
-                    None
+                    Some(GetKVResult::Expired)
+                } else if i.is_invalidated_entry(k, entry) {
+                    Some(GetKVResult::Invalidated)
                 } else {
                     // Valid entry.
                     let maybe_key = if need_key { Some(Arc::clone(k)) } else { None };
-                    Some((maybe_key, TrioArc::clone(entry)))
+                    Some(GetKVResult::Valid(maybe_key, TrioArc::clone(entry)))
                 }
             });
 
-        if let Some((maybe_key, entry)) = maybe_entry {
-            let mut is_expiry_modified = false;
+        match maybe_entry {
+            Some(GetKVResult::Valid(maybe_key, entry)) => {
+        //if let Some((maybe_key, entry)) = maybe_entry {
+                let mut is_expiry_modified = false;
 
-            // Call the user supplied `expire_after_read` method if any.
-            if let Some(expiry) = &self.inner.expiration_policy.expiry() {
-                let lm = entry.last_modified().expect("Last modified is not set");
-                // Check if the `last_modified` of entry is earlier than or equals to
-                // `now`. If not, update the `now` to `last_modified`. This is needed
-                // because there is a small chance that other threads have inserted
-                // the entry _after_ we obtained `now`.
-                now = now.max(lm);
+                // Call the user supplied `expire_after_read` method if any.
+                if let Some(expiry) = &self.inner.expiration_policy.expiry() {
+                    let lm = entry.last_modified().expect("Last modified is not set");
+                    // Check if the `last_modified` of entry is earlier than or equals to
+                    // `now`. If not, update the `now` to `last_modified`. This is needed
+                    // because there is a small chance that other threads have inserted
+                    // the entry _after_ we obtained `now`.
+                    now = now.max(lm);
 
-                // Convert `last_modified` from `moka::common::time::Instant` to
-                // `std::time::Instant`.
-                let lm = self.inner.clocks().to_std_instant(lm);
+                    // Convert `last_modified` from `moka::common::time::Instant` to
+                    // `std::time::Instant`.
+                    let lm = self.inner.clocks().to_std_instant(lm);
 
-                // Call the user supplied `expire_after_read` method.
-                //
-                // We will put the return value (`is_expiry_modified: bool`) to a
-                // `ReadOp` so that `apply_reads` method can determine whether or not
-                // to reschedule the timer for the entry.
-                //
-                // NOTE: It is not guaranteed that the `ReadOp` is passed to
-                // `apply_reads`. Here are the corner cases that the `ReadOp` will
-                // not be passed to `apply_reads`:
-                //
-                // - If the bounded `read_op_ch` channel is full, the `ReadOp` will
-                //   be discarded.
-                // - If we were called by `get_with_hash_without_recording` method,
-                //   the `ReadOp` will not be recorded at all.
-                //
-                // These cases are okay because when the timer wheel tries to expire
-                // the entry, it will check if the entry is actually expired. If not,
-                // the timer wheel will reschedule the expiration timer for the
-                // entry.
-                is_expiry_modified = Self::expire_after_read_or_update(
-                    |k, v, t, d| expiry.expire_after_read(k, v, t, d, lm),
-                    &entry.entry_info().key_hash().key,
-                    &entry,
-                    self.inner.expiration_policy.time_to_live(),
-                    self.inner.expiration_policy.time_to_idle(),
-                    now,
-                    self.inner.clocks(),
-                );
-            }
+                    // Call the user supplied `expire_after_read` method.
+                    //
+                    // We will put the return value (`is_expiry_modified: bool`) to a
+                    // `ReadOp` so that `apply_reads` method can determine whether or not
+                    // to reschedule the timer for the entry.
+                    //
+                    // NOTE: It is not guaranteed that the `ReadOp` is passed to
+                    // `apply_reads`. Here are the corner cases that the `ReadOp` will
+                    // not be passed to `apply_reads`:
+                    //
+                    // - If the bounded `read_op_ch` channel is full, the `ReadOp` will
+                    //   be discarded.
+                    // - If we were called by `get_with_hash_without_recording` method,
+                    //   the `ReadOp` will not be recorded at all.
+                    //
+                    // These cases are okay because when the timer wheel tries to expire
+                    // the entry, it will check if the entry is actually expired. If not,
+                    // the timer wheel will reschedule the expiration timer for the
+                    // entry.
+                    is_expiry_modified = Self::expire_after_read_or_update(
+                        |k, v, t, d| expiry.expire_after_read(k, v, t, d, lm),
+                        &entry.entry_info().key_hash().key,
+                        &entry,
+                        self.inner.expiration_policy.time_to_live(),
+                        self.inner.expiration_policy.time_to_idle(),
+                        now,
+                        self.inner.clocks(),
+                    );
+                }
 
-            let v = entry.value.clone();
-            let op = ReadOp::Hit {
-                value_entry: entry,
-                timestamp: now,
-                is_expiry_modified,
-            };
-            read_recorder(op, now);
-            Some(Entry::new(maybe_key, v, false))
-        } else {
-            read_recorder(ReadOp::Miss(hash), now);
-            None
+                let v = entry.value.clone();
+                let op = ReadOp::Hit {
+                    value_entry: entry,
+                    timestamp: now,
+                    is_expiry_modified,
+                };
+                read_recorder(op, now);
+                MaybeEntry::Valid(Entry::new(maybe_key, v, false))
+            },
+            Some(GetKVResult::Expired) => {
+                read_recorder(ReadOp::Miss(hash), now);
+                MaybeEntry::Expired
+            },
+            Some(GetKVResult::Invalidated) => {
+                read_recorder(ReadOp::Miss(hash), now);
+                MaybeEntry::Invalidated
+            },
+            Some(GetKVResult::Ignored(maybe_key, entry)) => {
+                read_recorder(ReadOp::Miss(hash), now);
+                let v = entry.value.clone();
+                MaybeEntry::Ignored(Entry::new(maybe_key, v, false))
+            },
+            None => MaybeEntry::None
         }
     }
 
