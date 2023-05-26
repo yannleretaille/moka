@@ -405,9 +405,18 @@ where
             Some(GetKVResult::Ignored(maybe_key, entry)) => {
                 read_recorder(ReadOp::Miss(hash), now);
                 let v = entry.value.clone();
+                // let op = ReadOp::Hit {
+                //     value_entry: entry,
+                //     timestamp: now,
+                //     is_expiry_modified: true,
+                // };
+                //read_recorder(op, now);
                 MaybeEntry::Ignored(Entry::new(maybe_key, v, false))
             },
-            None => MaybeEntry::None
+            None => {
+                read_recorder(ReadOp::Miss(hash), now);
+                MaybeEntry::None
+            }
         }
     }
 

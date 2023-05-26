@@ -2137,7 +2137,6 @@ mod tests {
             assert_with_mode!(cache.contains_key(&"c"), delivery_mode);
             // counts: a -> 1, b -> 1, c -> 1
             cache.sync();
-
             assert_with_mode!(cache.contains_key(&"a"), delivery_mode);
             assert_eq_with_mode!(cache.get(&"a"), Some("alice"), delivery_mode);
             assert_eq_with_mode!(cache.get(&"b"), Some("bob"), delivery_mode);

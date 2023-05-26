@@ -1329,13 +1329,13 @@ where
     ///
     pub async fn try_get_with<F, E>(&self, key: K, init: F) -> Result<V, Arc<E>>
     where
-        F: Future<Output = Result<V, E>> + Send,
+        F: Future<Output = Result<V, E>>,
         E: Send + Sync + 'static,
     {
         futures_util::pin_mut!(init);
         let hash = self.base.hash(&key);
         let key = Arc::new(key);
-        let replace = None as Option<fn(V) -> Pin<Box<dyn Future<Output=Result<V,E>>+Send>>>;
+        let replace = None as Option<fn(V) -> Pin<Box<dyn Future<Output=Result<V,E>>>>>;
         let replace_if = None as Option<fn(&V) -> bool>;
         self.get_or_try_insert_with_hash_and_fun(key, hash, init, replace, replace_if, false)
             .await
@@ -1354,7 +1354,7 @@ where
     {
         futures_util::pin_mut!(init);
         let hash = self.base.hash(key);
-        let replace = None as Option<fn(&V) -> Pin<Box<dyn Future<Output=Result<V,E>>+Send>>>;
+        let replace = None as Option<fn(&V) -> Pin<Box<dyn Future<Output=Result<V,E>>>>>;
         let replace_if = None as Option<fn(&V) -> bool>;
         self.get_or_try_insert_with_hash_by_ref_and_fun(key, hash, init, replace,  replace_if, false)
             .await

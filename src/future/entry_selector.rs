@@ -345,12 +345,12 @@ where
     /// [try-get-with-method]: ./struct.Cache.html#method.try_get_with
     pub async fn or_try_insert_with<F, E>(self, init: F) -> Result<Entry<K, V>, Arc<E>>
     where
-        F: Future<Output = Result<V, E>> + Send,
+        F: Future<Output = Result<V, E>>,
         E: Send + Sync + 'static,
     {
         futures_util::pin_mut!(init);
         let key = Arc::new(self.owned_key);
-        let replace = None as Option<fn(V) -> Pin<Box<dyn Future<Output=Result<V,E>>+Send>>>;
+        let replace = None as Option<fn(V) -> Pin<Box<dyn Future<Output=Result<V,E>>>>>;
         let replace_if = None as Option<fn(&V) -> bool>;
         self.cache
             .get_or_try_insert_with_hash_and_fun(key, self.hash, init, replace, replace_if, true)
@@ -376,7 +376,7 @@ where
     {
         futures_util::pin_mut!(init);
         let key = Arc::new(self.owned_key);
-        let replace = None as Option<fn(V) -> Pin<Box<dyn Future<Output=Result<V,E>>+Send>>>;
+        let replace = None as Option<fn(V) -> Pin<Box<dyn Future<Output=Result<V,E>>>>>;
         self.cache
             .get_or_try_insert_with_hash_and_fun(key, self.hash, init, replace, Some(replace_if), true)
             .await
@@ -749,11 +749,11 @@ where
     /// [try-get-with-method]: ./struct.Cache.html#method.try_get_with
     pub async fn or_try_insert_with<F, E>(self, init: F) -> Result<Entry<K, V>, Arc<E>>
     where
-        F: Future<Output = Result<V, E>> + Send,
+        F: Future<Output = Result<V, E>>,
         E: Send + Sync + 'static,
     {
         futures_util::pin_mut!(init);
-        let replace = None as Option<fn(&V) -> Pin<Box<dyn Future<Output=Result<V,E>>+Send>>>;
+        let replace = None as Option<fn(&V) -> Pin<Box<dyn Future<Output=Result<V,E>>>>>;
         let replace_if = None as Option<fn(&V) -> bool>;
         self.cache
             .get_or_try_insert_with_hash_by_ref_and_fun(self.ref_key, self.hash, init, replace, replace_if, true)

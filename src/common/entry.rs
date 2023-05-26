@@ -74,6 +74,7 @@ impl<K, V> Entry<K, V> {
     }
 }
 
+
 pub enum MaybeEntry<K,V> {
     Valid(Entry<K,V>),
     Ignored(Entry<K,V>),
@@ -83,6 +84,22 @@ pub enum MaybeEntry<K,V> {
     
     
 } 
+
+impl<K, V> Debug for MaybeEntry<K, V>
+where
+    K: Debug,
+    V: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Valid(entry) => write!(f,"MaybeEntry::Valid({entry:?})"),
+            Self::Ignored(entry) => write!(f,"MaybeEntry::Ignored({entry:?})"),
+            Self::Expired => f.debug_tuple("MaybeEntry::Expired").finish(),
+            Self::None => f.debug_tuple("MaybeEntry::Expired").finish(),
+            Self::Invalidated => f.debug_tuple("MaybeEntry::Invalidated").finish()
+        }
+    }
+}
 
 impl<K, V> MaybeEntry<K, V> {
     pub fn into_option(self) -> Option<Entry<K,V>>{
