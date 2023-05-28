@@ -388,7 +388,7 @@ where
     /// This method will try to resolve the `init` future and insert the output to the cache when the key does not exist.
     ///
     /// Or, if the key exists and the replace_if closure returns true, it will try to resolve the `replace` future and update the value in the cache.
-    pub async fn or_try_insert_or_replace_with_if<FI, FR, FrFut, E>(
+    pub async fn or_try_insert_and_replace_with_if<FI, FR, FrFut, E>(
         self, 
         init: FI,
         replace: FR,
