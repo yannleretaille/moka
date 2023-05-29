@@ -1335,9 +1335,8 @@ where
         futures_util::pin_mut!(init);
         let hash = self.base.hash(&key);
         let key = Arc::new(key);
-        let replace = None as Option<fn(V) -> Pin<Box<dyn Future<Output=Result<V,E>>>>>;
         let replace_if = None as Option<fn(&V) -> bool>;
-        self.get_or_try_insert_with_hash_and_fun(key, hash, init, replace, replace_if, false)
+        self.get_or_try_insert_with_hash_and_fun(key, hash, |_|init, replace_if, false)
             .await
             .map(Entry::into_value)
     }
@@ -1837,37 +1836,37 @@ where
         }
     }
 
-    pub(super) async fn get_or_try_insert_with_hash_and_fun<FI, FR, FrFut, E>(
+    pub(super) async fn get_or_try_insert_with_hash_and_fun<FI, FiFut, E>(
         &self,
         key: Arc<K>,
         hash: u64,
-        init: Pin<&mut FI>,
-        replace: Option<FR>,
+        init: FI,
         mut replace_if: Option<impl FnMut(&V) -> bool>,
         need_key: bool,
     ) -> Result<Entry<K, V>, Arc<E>>
     where
-        FI: Future<Output = Result<V, E>>,
-        FR: FnOnce(V) -> FrFut,
-        FrFut: Future<Output = Result<V, E>>,
+        FI: FnOnce(Option<V>) -> FiFut,
+        FiFut: Future<Output = Result<V, E>>,
         E: Send + Sync + 'static,
     {
         let maybe_entry =
             self.base
                 .get_with_hash_and_ignore_if(&key, hash, replace_if.as_mut(), need_key);
 
-        match (maybe_entry, replace) {
-            (MaybeEntry::Valid(entry),_) => Ok(entry),
-            (MaybeEntry::Ignored(entry), Some(replace)) => {
-                let r_future = replace(entry.into_value());
-                futures_util::pin_mut!(r_future);
-                self.try_insert_with_hash_and_fun(key, hash, r_future, replace_if, need_key)
+        match maybe_entry {
+            MaybeEntry::Valid(entry) => Ok(entry),
+            MaybeEntry::Ignored(entry) => {
+                let i_future = init(Some(entry.into_value()));
+                futures_util::pin_mut!(i_future);
+                self.try_insert_with_hash_and_fun(key, hash, i_future, replace_if, need_key)
                 .await
-            }, 
-            (MaybeEntry::Ignored(_), None) | (MaybeEntry::Invalidated,_) | (MaybeEntry::Expired,_) | (MaybeEntry::None, _) => {
-                self.try_insert_with_hash_and_fun(key, hash, init, replace_if, need_key)
+            },
+            MaybeEntry::Invalidated | MaybeEntry::Expired | MaybeEntry::None => {
+                let i_future = init(None);
+                futures_util::pin_mut!(i_future);
+                self.try_insert_with_hash_and_fun(key, hash, i_future, replace_if, need_key)
                 .await
-            }
+            },
         }
     }
 

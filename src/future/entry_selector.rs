@@ -353,7 +353,7 @@ where
         let replace = None as Option<fn(V) -> Pin<Box<dyn Future<Output=Result<V,E>>>>>;
         let replace_if = None as Option<fn(&V) -> bool>;
         self.cache
-            .get_or_try_insert_with_hash_and_fun(key, self.hash, init, replace, replace_if, true)
+            .get_or_try_insert_with_hash_and_fun(key, self.hash, |_|init, replace_if, true)
             .await
     }
 
@@ -378,32 +378,27 @@ where
         let key = Arc::new(self.owned_key);
         let replace = None as Option<fn(V) -> Pin<Box<dyn Future<Output=Result<V,E>>>>>;
         self.cache
-            .get_or_try_insert_with_hash_and_fun(key, self.hash, init, replace, Some(replace_if), true)
+            .get_or_try_insert_with_hash_and_fun(key, self.hash, |_|init, Some(replace_if), true)
             .await
     }
 
-    /// Works like [`or_try_insert_with_if`](#method.or_try_insert_with_if), but takes an additional
-    /// `replace` closure.
+    /// Works like [`or_try_insert_with_if`](#method.or_try_insert_with_if), but passes a Option<V> to a init closure instead.
     ///
-    /// This method will try to resolve the `init` future and insert the output to the cache when the key does not exist.
+    /// if the key exists and the replace_if closure returns true, Some(V) is passed, otherwise None. The closure has to return a future that will be attempted to be resolved.
     ///
-    /// Or, if the key exists and the replace_if closure returns true, it will try to resolve the `replace` future and update the value in the cache.
-    pub async fn or_try_insert_and_replace_with_if<FI, FR, FrFut, E>(
+    pub async fn or_try_insert_and_replace_with_if<FI, FiFut, E>(
         self, 
         init: FI,
-        replace: FR,
         replace_if: impl FnMut(&V) -> bool,
     ) -> Result<Entry<K, V>, Arc<E>>
     where
-        FI: Future<Output = Result<V, E>>,
-        FR: FnOnce(V) -> FrFut,
-        FrFut: Future<Output = Result<V, E>>,
+        FI: FnOnce(Option<V>) -> FiFut,
+        FiFut: Future<Output = Result<V, E>>,
         E: Send + Sync + 'static,
     {
-        futures_util::pin_mut!(init);
         let key = Arc::new(self.owned_key);
         self.cache
-            .get_or_try_insert_with_hash_and_fun(key, self.hash, init, Some(replace), Some(replace_if), true)
+            .get_or_try_insert_with_hash_and_fun(key, self.hash, |opt|init(opt), Some(replace_if), true)
             .await
     }
 }
